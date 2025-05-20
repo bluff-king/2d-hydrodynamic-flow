@@ -8,6 +8,10 @@ The simulation is implemented in C and CUDA, and can be run on a single CPU or a
 
 Todo
 
+## Simulation visualization
+
+![simulation_animation](simulation_animation.gif)
+
 ## Running tutorial
 
 ### C code (Non-parallel)
@@ -31,7 +35,6 @@ The visualization will be saved at `simulation_animation.gif`.
 ### CUDA code (Parallel)
 
 Todo
-
 
 ## References
 
