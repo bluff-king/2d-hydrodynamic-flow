@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#include <stdint.h>
 
 // Constants and parameters
 const double length_x = 1.0;
@@ -10,13 +11,15 @@ const int nx = 200;
 const int ny = 120;
 const double dx = length_x / nx;
 const double dy = length_y / ny;
-const double dt = 0.000005;
+const double dt = 0.000001;
 const double nu = 0.5;
 const double div_tolerance = 1e-3;
 const double beta0 = 1.0;
-const int max_iterations = 50;
+const int max_iterations = 200;
 const double total_time = 0.0005;
 const double beta = beta0 / (2 * dt * (1 / (dx*dx) + 1 / (dy*dy)));
+
+const int max_number_of_frames = 100;
 
 // Velocity fields, pressure, and divergence
 double **u; // x-velocity on cell faces (ny x nx+1)
@@ -39,8 +42,50 @@ int **mask; // (ny x nx)
 // Obstacle definition
 const int obstacle_x_start = (int)(nx * 0.3);
 const int obstacle_x_end = (int)(nx * 0.4);
-const int obstacle_y_start = (int)(ny * 0.1);
-const int obstacle_y_end = (int)(ny * 1);
+const int obstacle_y_start = (int)(ny * 0);
+const int obstacle_y_end = (int)(ny * 0.9);
+
+// Function to convert float to half-precision float
+uint16_t float_to_half(float f) {
+    // Convert float to bits
+    uint32_t f_bits = *((uint32_t*)&f);
+
+    // Extract sign, mantissa and exponent
+    uint16_t sign = (f_bits >> 31) & 0x01; 
+    uint16_t exp = (f_bits >> 23) & 0xFF;
+    uint32_t mant = f_bits & 0x7FFFFF;
+
+    // Handle special cases
+    if (f == 0.0f) return 0;
+    if (exp == 0xFF && mant == 0) return (sign << 15) | 0x7C00; // Infinity
+    if (exp == 0xFF && mant != 0) return (sign << 15) | 0x7E00; // NaN
+
+    // Calculate exponent for half precision
+    int16_t half_exp = exp - 127 + 15;
+    
+    // Handle normal numbers
+    if (half_exp >= 1 && half_exp <= 30) {
+        // Normal number
+        mant = mant >> 13;
+        return (sign << 15) | (half_exp << 10) | mant;
+    } 
+    else if (half_exp <= 0 && half_exp >= -10) {
+        // Subnormal number (denormalized)
+        // Shift mantissa to account for the exponent difference
+        // Include the implied leading 1 bit for the mantissa
+        mant = (mant | 0x800000) >> (14 - half_exp);
+        return (sign << 15) | mant;
+    }
+    else if (half_exp > 30) {
+        // Overflow to infinity
+        return (sign << 15) | 0x7C00;
+    }
+    else {
+        // Underflow to zero
+        return (sign << 15);
+    }
+}
+
 
 // Function to allocate memory for 2D arrays
 double** allocate_2d_array(int rows, int cols) {
@@ -82,6 +127,55 @@ void free_2d_int_array(int** arr, int rows) {
         free(arr[i]);
     }
     free(arr);
+}
+
+// Function to apply boundary conditions
+void apply_boundary_conditions() {
+    // Left boundary (inlet): constant velocity
+    for (int j = 0; j < ny; j++) {
+        u[j][0] = 1.0;
+    }
+
+    // Right boundary (outlet): zero gradient
+    for (int j = 0; j < ny; j++) {
+        u[j][nx] = u[j][nx-1];
+    }
+
+    // Top and bottom boundaries: no-slip condition
+    for (int i = 0; i < nx; i++) {
+        v[0][i] = 0.0;
+        v[ny][i] = 0.0;
+    }
+    for (int i = 0; i < nx + 1; i++) {
+        u[0][i] = 0.0;
+        u[ny-1][i] = 0.0;
+    }
+
+    // Obstacle boundary conditions: no-slip condition
+    for (int j = 0; j < ny; j++) {
+        for (int i = 0; i < nx; i++) {
+            if (mask[j][i] == 0) {
+                u[j][i] = 0.0;
+                u[j][i+1] = 0.0;
+                v[j][i] = 0.0;
+                v[j+1][i] = 0.0;
+            }
+        }
+    }
+
+    // Add velocity clamping
+    for (int j = 0; j < ny; j++) {
+        for (int i = 0; i < nx + 1; i++) {
+            if (u[j][i] > 5.0) u[j][i] = 5.0;
+            if (u[j][i] < -5.0) u[j][i] = -5.0;
+        }
+    }
+    for (int j = 0; j < ny + 1; j++) {
+        for (int i = 0; i < nx; i++) {
+            if (v[j][i] > 5.0) v[j][i] = 5.0;
+            if (v[j][i] < -5.0) v[j][i] = -5.0;
+        }
+    }
 }
 
 // Function to compute the divergence in each cell
@@ -204,57 +298,8 @@ void pressure_correction() {
     // printf("\nWarning: convergence not reached\n");
 }
 
-// Function to apply boundary conditions
-void apply_boundary_conditions() {
-    // Left boundary (inlet): constant velocity
-    for (int j = 0; j < ny; j++) {
-        u[j][0] = 1.0;
-    }
-
-    // Right boundary (outlet): zero gradient
-    for (int j = 0; j < ny; j++) {
-        u[j][nx] = u[j][nx-1];
-    }
-
-    // Top and bottom boundaries: no-slip condition
-    for (int i = 0; i < nx; i++) {
-        v[0][i] = 0.0;
-        v[ny][i] = 0.0;
-    }
-    for (int i = 0; i < nx + 1; i++) {
-        u[0][i] = 0.0;
-        u[ny-1][i] = 0.0;
-    }
-
-    // Obstacle boundary conditions: no-slip condition
-    for (int j = 0; j < ny; j++) {
-        for (int i = 0; i < nx; i++) {
-            if (mask[j][i] == 0) {
-                u[j][i] = 0.0;
-                u[j][i+1] = 0.0;
-                v[j][i] = 0.0;
-                v[j+1][i] = 0.0;
-            }
-        }
-    }
-
-    // Add velocity clamping
-    for (int j = 0; j < ny; j++) {
-        for (int i = 0; i < nx + 1; i++) {
-            if (u[j][i] > 3.0) u[j][i] = 3.0;
-            if (u[j][i] < -3.0) u[j][i] = -3.0;
-        }
-    }
-    for (int j = 0; j < ny + 1; j++) {
-        for (int i = 0; i < nx; i++) {
-            if (v[j][i] > 3.0) v[j][i] = 3.0;
-            if (v[j][i] < -3.0) v[j][i] = -3.0;
-        }
-    }
-}
-
 // Function to calculate velocities at cell centers and magnitude
-void calculate_center_velocities_and_magnitude(double **u_center, double **v_center, double **velocity_magnitude) {
+void calculate_center_velocities_and_magnitude() {
     for (int j = 0; j < ny; j++) {
         for (int i = 0; i < nx; i++) {
             u_center[j][i] = 0.5 * (u[j][i] + u[j][i+1]);
@@ -264,69 +309,64 @@ void calculate_center_velocities_and_magnitude(double **u_center, double **v_cen
     }
 }
 
-// Function to write the current state to the JSON file
-void write_state_to_json(FILE *fp, int time_step, double current_time, double **u_center, double **v_center, double **velocity_magnitude) {
+// Function to write the current state to the binary file
+void write_state_to_binary(FILE *fp_u_center, FILE *fp_v_center, FILE *fp_magnitude) {
+
+    for (int j = 0; j < ny; j++) {
+        for (int i = 0; i < nx; i++) {
+            uint16_t half_val = float_to_half((float)u_center[j][i]);
+            fwrite(&half_val, sizeof(uint16_t), 1, fp_u_center);
+        }
+    }
+
+    for (int j = 0; j < ny; j++) {
+        for (int i = 0; i < nx; i++) {
+            uint16_t half_val = float_to_half((float)v_center[j][i]);
+            fwrite(&half_val, sizeof(uint16_t), 1, fp_v_center);
+        }
+    }
+
+    for (int j = 0; j < ny; j++) {
+        for (int i = 0; i < nx; i++) {
+            uint16_t half_val = float_to_half((float)velocity_magnitude[j][i]);
+            fwrite(&half_val, sizeof(uint16_t), 1, fp_magnitude);
+        }
+    }
+}
+
+// Function to write metadata to a JSON file
+void write_metadata_to_json(const char *filename) {
+    FILE *fp = fopen(filename, "w");
+    if (fp == NULL) {
+        perror("Error opening file");
+        return;
+    }
+
     fprintf(fp, "{\n");
-    fprintf(fp, "\"time_step\": %d,\n", time_step);
-    fprintf(fp, "\"current_time\": %f,\n", current_time);
+    fprintf(fp, "    \"length_x\": %f,\n", length_x);
+    fprintf(fp, "    \"length_y\": %f,\n", length_y);
+    fprintf(fp, "    \"nx\": %d,\n", nx);
+    fprintf(fp, "    \"ny\": %d,\n", ny);
+    fprintf(fp, "    \"dx\": %f,\n", dx);
+    fprintf(fp, "    \"dy\": %f,\n", dy);
+    fprintf(fp, "    \"dt\": %f,\n", dt);
+    fprintf(fp, "    \"nu\": %f,\n", nu);
+    fprintf(fp, "    \"div_tolerance\": %e,\n", div_tolerance);
+    fprintf(fp, "    \"beta0\": %f,\n", beta0);
+    fprintf(fp, "    \"max_iterations\": %d,\n", max_iterations);
+    fprintf(fp, "    \"total_time\": %f,\n", total_time);
+    fprintf(fp, "    \"beta\": %f,\n", beta);
+    fprintf(fp, "    \"obstacle_x_start\": %d,\n", obstacle_x_start);
+    fprintf(fp, "    \"obstacle_x_end\": %d,\n", obstacle_x_end);
+    fprintf(fp, "    \"obstacle_y_start\": %d,\n", obstacle_y_start);
+    fprintf(fp, "    \"obstacle_y_end\": %d,\n", obstacle_y_end);
 
-    // Write u velocity matrix
-    fprintf(fp, "\"u\": [\n");
-    for (int j = 0; j < ny; j++) {
-        fprintf(fp, "[");
-        for (int i = 0; i < nx + 1; i++) {
-            fprintf(fp, "%f%s", u[j][i], (i == nx) ? "" : ", ");
-        }
-        fprintf(fp, "]%s\n", (j == ny - 1) ? "" : ",");
-    }
-    fprintf(fp, "],\n");
-
-    // Write v velocity matrix
-    fprintf(fp, "\"v\": [\n");
-    for (int j = 0; j < ny + 1; j++) {
-        fprintf(fp, "[");
-        for (int i = 0; i < nx; i++) {
-            fprintf(fp, "%f%s", v[j][i], (i == nx - 1) ? "" : ", ");
-        }
-        fprintf(fp, "]%s\n", (j == ny) ? "" : ",");
-    }
-    fprintf(fp, "],\n");
-
-    // Write u_center matrix
-    fprintf(fp, "\"u_center\": [\n");
-    for (int j = 0; j < ny; j++) {
-        fprintf(fp, "[");
-        for (int i = 0; i < nx; i++) {
-            fprintf(fp, "%f%s", u_center[j][i], (i == nx - 1) ? "" : ", ");
-        }
-        fprintf(fp, "]%s\n", (j == ny - 1) ? "" : ",");
-    }
-    fprintf(fp, "],\n");
-
-    // Write v_center matrix
-    fprintf(fp, "\"v_center\": [\n");
-    for (int j = 0; j < ny; j++) {
-        fprintf(fp, "[");
-        for (int i = 0; i < nx; i++) {
-            fprintf(fp, "%f%s", v_center[j][i], (i == nx - 1) ? "" : ", ");
-        }
-        fprintf(fp, "]%s\n", (j == ny - 1) ? "" : ",");
-    }
-    fprintf(fp, "],\n");
-
-    // Write velocity_magnitude matrix
-    fprintf(fp, "\"velocity_magnitude\": [\n");
-    for (int j = 0; j < ny; j++) {
-        fprintf(fp, "[");
-        for (int i = 0; i < nx; i++) {
-            fprintf(fp, "%f%s", velocity_magnitude[j][i], (i == nx - 1) ? "" : ", ");
-        }
-        fprintf(fp, "]%s\n", (j == ny - 1) ? "" : ",");
-    }
-    fprintf(fp, "]\n");
-
+    fprintf(fp, "    \"data_dtype\": \"float16\",\n");
+    fprintf(fp, "    \"output_interval_in_c_steps\": %d,\n", (int)(total_time / dt) / max_number_of_frames);
+    fprintf(fp, "    \"num_frames_output\": %d\n", ((int)(total_time / dt) / ((int)(total_time / dt) / max_number_of_frames)));
 
     fprintf(fp, "}");
+    fclose(fp);
 }
 
 
@@ -357,16 +397,19 @@ int main() {
         u[j][0] = 1.0;
     }
 
-    FILE *fp = fopen("simulation_output.json", "w");
-    if (fp == NULL) {
-        perror("Error opening file");
+    write_metadata_to_json("simulation_metadata.json");
+
+    FILE *fp_u_center = fopen("u_center_data.bin", "wb");
+    FILE *fp_v_center = fopen("v_center_data.bin", "wb");
+    FILE *fp_magnitude = fopen("velocity_magnitude_data.bin", "wb");
+
+    if (fp_u_center == NULL || fp_v_center == NULL || fp_magnitude == NULL) {
+        perror("Error opening binary files");
         return 1;
     }
 
-    fprintf(fp, "[\n"); // Start of JSON array
-
     int num_time_steps = (int)(total_time / dt);
-    int output_interval = num_time_steps / 50; // Output 50 frames
+    int output_interval = num_time_steps / max_number_of_frames;
     if (output_interval == 0) output_interval = 1;
 
     for (int t = 0; t < num_time_steps; t++) {
@@ -376,18 +419,14 @@ int main() {
         calculate_center_velocities_and_magnitude(u_center, v_center, velocity_magnitude);
 
         if (t % output_interval == 0) {
-            double current_time = t * dt;
-            write_state_to_json(fp, t, current_time, u_center, v_center, velocity_magnitude);
-            if (t < num_time_steps - output_interval) {
-                 fprintf(fp, ",\n"); // Separator between states
-            } else {
-                 fprintf(fp, "\n"); // No separator after the last state
-            }
+            write_state_to_binary(fp_u_center, fp_v_center, fp_magnitude);
         }
     }
 
-    fprintf(fp, "]\n"); // End of JSON array
-    fclose(fp);
+    // Close binary files
+    fclose(fp_u_center);
+    fclose(fp_v_center);
+    fclose(fp_magnitude);
 
     // Free memory
     free_2d_array(u, ny);

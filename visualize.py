@@ -2,50 +2,96 @@ import json
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from IPython.display import HTML
+# from IPython.display import HTML
+import os
 
-import re
-import ast
+dtype_map = {
+    "float16": np.float16,
+    "float32": np.float32,
+    "float64": np.float64,
+    "int16": np.int16,
+    "int32": np.int32,
+    "int64": np.int64
+}
 
-# Function to extract constant values from C code
-def get_constant(c_code_string: str) -> dict:
-    constants_dict = {}
-    target_variables = ['length_x', 'length_y', 'nx', 'ny']
-
-
-    variable_pattern = re.compile(
-        r'^\s*const\s+\S+\s+({})'.format('|'.join(target_variables)) +
-        r'\s*=\s*(.*?);'
-    )
-
-    lines = c_code_string.splitlines()
-
-    for line in lines:
-        match = variable_pattern.search(line)
-        if match:
-            variable_name = match.group(1)
-            value_string = match.group(2).strip()
-            evaluated_value = ast.literal_eval(value_string)
-            constants_dict[variable_name] = evaluated_value
-
-
-    return constants_dict
-
-# Load and parse the JSON data
-def load_simulation_data(file_path):
+def load_metadata(file_path):
     with open(file_path, 'r') as f:
-        data = json.load(f)
-    return data
+        metadata = json.load(f)
+    return metadata
+
+# Function to read raw binary data to 3d np array (num_frames, rows, cols)
+def read_binary_data(filename, rows, cols, dtype_str):
+
+    np_dtype = dtype_map.get(dtype_str)
+    if np_dtype is None:
+        raise Exception(f"Error: Unsupported data type '{dtype_str}' in metadata")
+
+    if not os.path.exists(filename):
+        raise Exception(f"Error: File not found: {filename}")
+
+
+    with open(filename, 'rb') as f:
+        data = f.read()
+    arr = np.frombuffer(data, dtype=np_dtype)
+
+    expected_elements_per_frame = rows * cols
+    num_frames_in_file = arr.size // expected_elements_per_frame
+
+    assert arr.size % expected_elements_per_frame == 0, 'Number of elements are not divisible by rows*cols'
+
+    reshaped_arr = arr.reshape((num_frames_in_file, rows, cols))
+    return reshaped_arr
+
+# Function to load simulation data from binary files
+def load_simulation_data(output_dir, metadata):
+    nx = metadata['nx']
+    ny = metadata['ny']
+    data_dtype = metadata['data_dtype']
+
+    dims = {
+        'u_center': (ny, nx),
+        'v_center': (ny, nx),
+        'velocity_magnitude': (ny, nx)
+    }
+
+    loaded_data = {}
+    
+    for var_name, (rows, cols) in dims.items():
+        filename = os.path.join(output_dir, f"{var_name}_data.bin")
+        loaded_data[var_name] = read_binary_data(filename, rows, cols, data_dtype)
+        if loaded_data[var_name] is None:
+            raise Exception(f"Failed to load {var_name}")
+
+    num_frames = metadata['num_frames_output']
+    
+    simulation_data_list = []
+    for i in range(num_frames):
+        time_step = i * metadata['output_interval_in_c_steps']
+        current_time = time_step * metadata['dt']
+
+        frame_data = {
+            'u_center': loaded_data['u_center'][i],
+            'v_center': loaded_data['v_center'][i],
+            'velocity_magnitude': loaded_data['velocity_magnitude'][i],
+            'time_step': time_step,
+            'current_time': current_time
+        }
+        simulation_data_list.append(frame_data)
+        
+    return simulation_data_list
 
 # Function to create the animation
-def create_animation(simulation_data, nx, ny, length_x, length_y):
-    fig, ax = plt.subplots(figsize=(10, 6))
+def create_animation(simulation_data, metadata):
+    nx = metadata['nx']
+    ny = metadata['ny']
+    length_x = metadata['length_x']
+    length_y = metadata['length_y']
+    # obstacle_x_start = metadata['obstacle_x_start']
+    # obstacle_x_end = metadata['obstacle_x_end']
+    # obstacle_y_start = metadata['obstacle_y_start']
+    # obstacle_y_end = metadata['obstacle_y_end']
 
-    # Define the obstacle boundaries
-    obstacle_x_start = int(nx * 0.3)
-    obstacle_x_end = int(nx * 0.4)
-    obstacle_y_start = int(ny * 0.3)
-    obstacle_y_end = int(ny * 0.7)
+    fig, ax = plt.subplots(figsize=(10, 6))
 
     # Create a mask for the obstacle (1 for fluid cells, 0 for obstacle cells)
     mask = np.ones((ny, nx))
@@ -61,11 +107,9 @@ def create_animation(simulation_data, nx, ny, length_x, length_y):
         ax.clear()
 
         state = simulation_data[frame]
-        u = np.array(state['u'])
-        v = np.array(state['v'])
-        u_center = np.array(state['u_center'])
-        v_center = np.array(state['v_center'])
-        velocity_magnitude = np.array(state['velocity_magnitude'])
+        u_center = state['u_center']
+        v_center = state['v_center']
+        velocity_magnitude = state['velocity_magnitude']
         time_step = state['time_step']
         current_time = state['current_time']
 
@@ -102,30 +146,24 @@ def create_animation(simulation_data, nx, ny, length_x, length_y):
 
     return anim
 
-# Main execution block for Jupyter Notebook
-def main(source_code: str):
+def main():
+    output_dir = ""
+    metadata_file = os.path.join(output_dir, "simulation_metadata.json")
 
-    name = source_code[:-2]
-    json_file_path = f'{name}_output.json'
-    simulation_data = load_simulation_data(json_file_path)
+    metadata = load_metadata(metadata_file)
+    simulation_data = load_simulation_data(output_dir, metadata)
 
-    with open(source_code, 'r') as f:
-        c_code = f.read()
-    
-    const_dict = get_constant(c_code)
-
-    nx = const_dict['nx']
-    ny = const_dict['ny']
-    length_x = const_dict['length_x']
-    length_y = const_dict['length_y']
-
-    anim = create_animation(simulation_data, nx, ny, length_x, length_y)
+    anim = create_animation(simulation_data, metadata)
     # To display in Jupyter Notebook, the HTML object needs to be the last line
     # HTML(anim.to_jshtml()) # This line should be uncommented in the notebook
 
-    # For saving the animation to a file (optional)
-    anim.save('simulation_animation.gif', writer='pillow', fps=5)
+    # For saving the animation to a file
+    anim.save(
+        'simulation_animation.gif',
+        writer='ffmpeg',
+        fps=5
+    )
 
 
 if __name__ == '__main__':
-    main('simulation.c')
+    main()
