@@ -326,7 +326,7 @@ void write_state_to_binary(FILE *fp_u_center, FILE *fp_v_center,
 }
 
 // Function to write metadata to a JSON file
-void write_metadata_to_json(const char *filename, double compute_time_seconds) {
+void write_metadata_to_json(const char *filename, double compute_time_seconds, double total_time_seconds) {
     FILE *fp = fopen(filename, "w");
     if (fp == NULL) {
         perror("Error opening file");
@@ -358,14 +358,18 @@ void write_metadata_to_json(const char *filename, double compute_time_seconds) {
     fprintf(fp, "    \"num_frames_output\": %d,\n",
             ((int)(total_time / dt) /
              ((int)(total_time / dt) / max_number_of_frames)));
-    fprintf(fp, "    \"total_compute_time_seconds\": %f\n",
+    fprintf(fp, "    \"total_compute_time_seconds\": %f,\n",
             compute_time_seconds);
+    fprintf(fp, "    \"total_time_seconds\": %f,\n",
+            total_time_seconds);
+    fprintf(fp, "    \"parallelization\": \"None\"\n");
 
     fprintf(fp, "}");
     fclose(fp);
 }
 
 int main() {
+    clock_t total_start_time = clock();
     // Allocate memory
     u = allocate_2d_array(ny, nx + 1);
     v = allocate_2d_array(ny + 1, nx);
@@ -428,9 +432,12 @@ int main() {
     fclose(fp_u_center);
     fclose(fp_v_center);
     fclose(fp_magnitude);
+    clock_t total_end_time = clock();
+    double total_time_seconds =
+        (double)(total_end_time - total_start_time) / CLOCKS_PER_SEC;
 
     write_metadata_to_json("simulation_metadata.json",
-                           total_compute_time_seconds);
+                           total_compute_time_seconds, total_time_seconds);
 
     // Free memory
     free_2d_array(u, ny);
