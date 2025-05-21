@@ -187,18 +187,6 @@ void compute_divergence() {
 
 // Function to update velocities based on Navier-Stokes equation
 void update_velocities() {
-    // Copy current velocities to temporary arrays
-    for (int j = 0; j < ny; j++) {
-        for (int i = 0; i < nx + 1; i++) {
-            u_next[j][i] = u[j][i];
-        }
-    }
-    for (int j = 0; j < ny + 1; j++) {
-        for (int i = 0; i < nx; i++) {
-            v_next[j][i] = v[j][i];
-        }
-    }
-
     // Internal cells (excluding boundaries and obstacle)
     for (int j = 1; j < ny - 1; j++) {
         for (int i = 1; i < nx; i++) {
@@ -252,19 +240,17 @@ void update_velocities() {
     }
 
     // Update the velocity fields
-    for (int j = 0; j < ny; j++) {
-        for (int i = 0; i < nx + 1; i++) {
+    for (int j = 1; j < ny - 1; j++) {
+        for (int i = 1; i < nx; i++) {
             u[j][i] = u_next[j][i];
         }
     }
-    for (int j = 0; j < ny + 1; j++) {
-        for (int i = 0; i < nx; i++) {
+    for (int j = 1; j < ny; j++) {
+        for (int i = 1; i < nx - 1; i++) {
             v[j][i] = v_next[j][i];
         }
     }
 
-    // Apply boundary conditions
-    // apply_boundary_conditions(); // Will be called after pressure correction
 }
 
 // Function to perform pressure correction iterations
