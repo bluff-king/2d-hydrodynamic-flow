@@ -34,7 +34,20 @@ The visualization will be saved at `simulation_animation.gif`.
 
 ### CUDA code (Parallel)
 
-Todo
+> Notice: The code utilizes double-precision (64 bits) `atomicAdd()` to avoid data race, which is only supported for GPU with compute capability of 6.0 or higher. Consider compiling with flag `-arch=sm_60` or higher.
+
+In addition to the requirements for the C code, you will also need to have `nvcc` installed.
+
+```bash
+# compile with nvcc, replace XX with the compute capability of your GPU
+nvcc simulation_cuda.cu -o bin/simulation_cuda -arch=sm_XX
+
+# run simulation
+./bin/simulation_cuda
+
+# visualize
+python visualize.py
+```
 
 ## References
 
