@@ -19,6 +19,9 @@ Todo
 Make sure to have `gcc` or `clang` installed, and a Python environment with `matplotlib` and `numpy` installed.
 
 ```bash
+# create bin folder if it doesn't exist
+mkdir bin
+
 # compile with gcc or clang
 gcc simulation.c -o bin/simulation -lm
 
@@ -39,6 +42,9 @@ The visualization will be saved at `simulation_animation.gif`.
 In addition to the requirements for the C code, you will also need to have `nvcc` installed.
 
 ```bash
+# create bin folder if it doesn't exist
+mkdir bin
+
 # compile with nvcc, replace XX with the compute capability of your GPU
 nvcc simulation_cuda.cu -o bin/simulation_cuda -arch=sm_XX
 
