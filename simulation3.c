@@ -275,31 +275,6 @@ void write_state_to_binary(FILE *fp_u_center, FILE *fp_v_center,
     }
 }
 
-// Function to write centerline velocities to text file
-void write_centerline_velocities() {
-    FILE *fp = fopen("centerline_velocities.txt", "w");
-    if (fp == NULL) {
-        perror("Error opening centerline file");
-        return;
-    }
-    // u-velocity along vertical centerline (x = 1.0, i = nx/2)
-    fprintf(fp, "# u-velocity along vertical centerline (x = 1.0)\n");
-    fprintf(fp, "# y\tu\n");
-    int i_center = nx / 2; // x = 1.0
-    for (int j = 0; j < ny; j++) {
-        double y = j * dy;
-        fprintf(fp, "%f\t%f\n", y, u_center[j][i_center]);
-    }
-    // v-velocity along horizontal centerline (y = 0.5, j = ny/2)
-    fprintf(fp, "\n# v-velocity along horizontal centerline (y = 0.5)\n");
-    fprintf(fp, "# x\tv\n");
-    int j_center = ny / 2; // y = 0.5
-    for (int i = 0; i < nx; i++) {
-        double x = i * dx;
-        fprintf(fp, "%f\t%f\n", x, v_center[j_center][i]);
-    }
-    fclose(fp);
-}
 
 // Function to write metadata to a JSON file
 void write_metadata_to_json(const char *filename, double compute_time_seconds, double total_time_seconds) {
@@ -399,9 +374,6 @@ int main() {
             write_state_to_binary(fp_u_center, fp_v_center, fp_magnitude);
         }
     }
-
-    // Write centerline velocities for analysis
-    write_centerline_velocities();
 
     // Close binary files
     fclose(fp_u_center);

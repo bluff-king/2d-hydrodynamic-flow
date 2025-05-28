@@ -8,8 +8,8 @@
 // Constants and parameters
 const double length_x = 1.0;
 const double length_y = 1.0;
-const int nx = 150;
-const int ny = 150;
+const int nx = 160;
+const int ny = 160;
 const double dx = length_x / nx;
 const double dy = length_y / ny;
 const double Re = 500.0;

@@ -7,21 +7,35 @@
 
 
 // Constants and parameters
+const int scale = 2;
 const double length_x = 1.0;
-const double length_y = 0.6;
-const int nx = 200;
-const int ny = 120;
+const double length_y = 2.0;
+const int nx = 50 * scale;
+const int ny = 100 * scale;
 const double dx = length_x / nx;
 const double dy = length_y / ny;
+const double Re = 0.05;
+const double U = 1.0;
+const double L = 1.0;
+const double nu = U * L / Re;
 const double dt = 0.000001;
-const double nu = 0.5;
 const double div_tolerance = 1e-3;
 const double beta0 = 1.0;
 const int max_iterations = 200;
-const double total_time = 0.0005;
+const double total_time = 0.001;
 const double beta = beta0 / (2*dt*(1 / (dx*dx) + 1 / (dy*dy)));
 
 const int max_number_of_frames = 50;
+
+// Inlet and outlet positions
+const int inlet_start = scale * (44 - 2);
+const int inlet_end = scale * (56 + 2);
+const int outlet1_start = scale * (10 - 2);
+const int outlet1_end = scale * (23 + 2);
+const int outlet2_start = scale * (44 - 2);
+const int outlet2_end = scale * (56 + 2);
+const int outlet3_start = scale * (77 - 2);
+const int outlet3_end = scale * (90 + 2);
 
 #define s_d sizeof(double)
 #define s_i sizeof(int)
@@ -46,7 +60,6 @@ double **h_div;                 // divergence (ny x nx)
 double **h_u_center;            // x-velocity at cell centers (ny x nx)
 double **h_v_center;            // y-velocity at cell centers (ny x nx)
 double **h_velocity_magnitude;  // Velocity magnitude (ny x nx)
-int **h_mask;                   // Obstacle mask (ny x nx)
 int *h_converged;               // Convergence flag
 
 // Device 1D arrays
@@ -59,14 +72,7 @@ double *d_v_next;              // temporary y-velocity
 double *d_u_center;            // x-velocity at cell centers
 double *d_v_center;            // y-velocity at cell centers
 double *d_velocity_magnitude;  // Velocity magnitude
-int *d_mask;                   // Obstacle mask
 int *d_converged;              // Convergence flag
-
-// Obstacle definition
-const int obstacle_x_start = (int)(nx*0.3);
-const int obstacle_x_end = (int)(nx*0.4);
-const int obstacle_y_start = (int)(ny*0);
-const int obstacle_y_end = (int)(ny*0.9);
 
 // Function to convert float to half-precision float
 uint16_t float_to_half(float f) {
@@ -116,28 +122,8 @@ double **allocate_2d_array(int rows, int cols) {
     return arr;
 }
 
-// Function to allocate memory for 2D integer arrays on host
-int **allocate_2d_int_array(int rows, int cols) {
-    int **arr = (int **)malloc(rows*sizeof(int *));
-    int *data = (int *)malloc(rows*cols*s_i);
-    for (int i = 0; i < rows; i++) {
-        arr[i] = &data[i*cols];
-        // Initialize with ones
-        for (int j = 0; j < cols; j++) {
-            arr[i][j] = 1;
-        }
-    }
-    return arr;
-}
-
 // Function to free memory for 2D arrays on host
 void free_2d_array(double **arr) {
-    free(arr[0]);  // Free the data block
-    free(arr);     // Free the pointers
-}
-
-// Function to free memory for 2D integer arrays on host
-void free_2d_int_array(int **arr) {
     free(arr[0]);  // Free the data block
     free(arr);     // Free the pointers
 }
@@ -161,12 +147,6 @@ void copy_host_to_device() {
         CUDA_CHECK_ERROR(cudaMemcpy(d_p + j*nx, h_p[j], nx*s_d,
                                     cudaMemcpyHostToDevice));
     }
-
-    // Copy mask
-    for (int j = 0; j < ny; j++) {
-        CUDA_CHECK_ERROR(cudaMemcpy(d_mask + j*nx, h_mask[j], nx*s_i,
-                                    cudaMemcpyHostToDevice));
-    }
 }
 
 // Function to copy 1D device arrays to 2D host arrays
@@ -187,57 +167,63 @@ void copy_device_to_host() {
 
 // CUDA kernel to apply boundary conditions
 __global__ void apply_boundary_conditions_kernel(double *u, double *v,
-                                                 int *mask, int nx, int ny) {
+                                                 int nx, int ny, int inlet_start, int inlet_end,
+                                                 int outlet1_start, int outlet1_end, int outlet2_start,
+                                                 int outlet2_end, int outlet3_start, int outlet3_end) {
     int i = blockIdx.x*blockDim.x + threadIdx.x;
     int j = blockIdx.y*blockDim.y + threadIdx.y;
 
-    // Left boundary (inlet): constant velocity
+    // Left boundary (inlet): u = const, v = 0 at inlet; u = 0, v = 0 elsewhere
     if (i == 0 && j < ny) {
-        u[j*(nx+1) + 0] = 1.0;
+        if (j >= inlet_start && j <= inlet_end) {
+            u[j*(nx+1) + 0] = 0.1; // Inlet velocity
+        } else {
+            u[j*(nx+1) + 0] = 0.0; // No-slip on rest of the left wall
+        }
+    }
+    if (i == 0 && j <= ny) {
+        v[j*nx + 0] = 0.0; // No y-velocity at left boundary
     }
 
-    // Right boundary (outlet): zero gradient
+    // Right boundary (outlets): zero-gradient for u at outlets; u = 0 elsewhere
     if (i == nx && j < ny) {
-        u[j*(nx+1) + nx] = u[j*(nx+1) + nx-1];
+        if ((j >= outlet1_start && j <= outlet1_end) ||
+            (j >= outlet2_start && j <= outlet2_end) ||
+            (j >= outlet3_start && j <= outlet3_end)) {
+            u[j*(nx+1) + nx] = u[j*(nx+1) + nx-1]; // Zero-gradient at outlets
+        } else {
+            u[j*(nx+1) + nx] = 0.0; // No-slip on rest of the right wall
+        }
     }
-
-    // Top and bottom boundaries: no-slip condition
-    if (i < nx && j == 0) {
-        v[0*nx + i] = 0.0;
-    }
-
-    if (i < nx && j == ny) {
-        v[ny*nx + i] = 0.0;
-    }
-
-    if (i < nx+1 && j == 0) {
-        u[0*(nx+1) + i] = 0.0;
-    }
-
-    if (i < nx+1 && j == ny-1) {
-        u[(ny-1)*(nx+1) + i] = 0.0;
-    }
-
-    // Synchronize threads
-    __syncthreads();
-
-    // Obstacle boundary conditions: no-slip condition
-    if (i < nx && j < ny) {
-        if (mask[j*nx + i] == 0) {
-            u[j*(nx+1) + i] = 0.0;
-            u[j*(nx+1) + i+1] = 0.0;
-            v[j*nx + i] = 0.0;
-            v[(j+1)*nx + i] = 0.0;
+    if (i == nx-1 && j <= ny) {
+        if (j > 0 && j < ny) {
+            v[j*nx + nx-1] = v[j*nx + nx-2]; // Zero-gradient for v at right boundary
+        } else {
+            v[j*nx + nx-1] = 0.0;
         }
     }
 
-    // Velocity clamping
-    if (i < nx+1 && j < ny) {
+    // Top and bottom boundaries: no-slip condition
+    if (j == 0 && i <= nx) {
+        u[0*(nx+1) + i] = 0.0;     // Bottom
+    }
+    if (j == ny-1 && i <= nx) {
+        u[(ny-1)*(nx+1) + i] = 0.0;  // Top
+    }
+    if (j == 0 && i < nx) {
+        v[0*nx + i] = 0.0;     // Bottom
+    }
+    if (j == ny && i < nx) {
+        v[ny*nx + i] = 0.0;    // Top
+    }
+
+    // Velocity clamping to prevent numerical instability
+    if (i <= nx && j < ny) {
         if (u[j*(nx+1) + i] > 5.0) u[j*(nx+1) + i] = 5.0;
         if (u[j*(nx+1) + i] < -5.0) u[j*(nx+1) + i] = -5.0;
     }
 
-    if (i < nx && j < ny+1) {
+    if (i < nx && j <= ny) {
         if (v[j*nx + i] > 5.0) v[j*nx + i] = 5.0;
         if (v[j*nx + i] < -5.0) v[j*nx + i] = -5.0;
     }
@@ -281,10 +267,10 @@ __global__ void update_velocities_kernel(double *u, double *v, double *p,
 
         // Implement u-momentum equation (Eq. u-finite-diff)
         u_next[j*(nx+1) + i] =
-            u[j*(nx+1) + i] + dt * ( 
-                + (u_i__j*u_i__j - u_i_plus1__j*u_i_plus1__j) / dx
-                + (uv_i_plushalf__j_minushalf - uv_i_plushalf__j_plushalf) / dy +
-                + (p[j*nx + i-1] - p[j*nx + i]) / dx 
+            u[j*(nx+1) + i] + dt * (
+                - (u_i_plus1__j*u_i_plus1__j - u_i__j*u_i__j) / dx
+                - (uv_i_plushalf__j_plushalf - uv_i_plushalf__j_minushalf) / dy +
+                - (p[j*nx + i] - p[j*nx + i-1]) / dx
                 + nu*(
                     (u[j*(nx+1) + i+1] - 2*u[j*(nx+1) + i] + u[j*(nx+1) + i-1]) / (dx*dx)
                     + (u[(j+1)*(nx+1) + i] - 2*u[j*(nx+1) + i] + u[(j-1)*(nx+1) + i]) / (dy*dy)
@@ -308,10 +294,10 @@ __global__ void update_velocities_kernel(double *u, double *v, double *p,
 
         // Implement v-momentum equation (Eq. v-finite-diff)
         v_next[j*nx + i] =
-            v[j*nx + i] + dt * ( 
-                + (v_i__j*v_i__j - v_i__j_plus1*v_i__j_plus1) / dy
-                + (uv_i_minushalf__j_plushalf - uv_i_plushalf__j_plushalf) / dx +
-                + (p[(j-1)*nx + i] - p[j*nx + i]) / dy 
+            v[j*nx + i] + dt * (
+                - (v_i__j_plus1*v_i__j_plus1 - v_i__j*v_i__j) / dy
+                - (uv_i_plushalf__j_plushalf - uv_i_minushalf__j_plushalf) / dx +
+                - (p[j*nx + i] - p[(j-1)*nx + i]) / dy
                 + nu*(
                     (v[j*nx + i+1] - 2*v[j*nx + i] + v[j*nx + i-1]) / (dx*dx)
                     + (v[(j+1)*nx + i] - 2*v[j*nx + i] + v[(j-1)*nx + i]) / (dy*dy)
@@ -336,54 +322,27 @@ __global__ void update_velocities_final_kernel(double *u, double *v,
     }
 }
 
-// CUDA kernel to perform pressure correction iterations (Red-Black - Red Phase)
-__global__ void pressure_correction_kernel_red(double *u, double *v, double *p,
-                                            double *div, int *mask, int nx,
-                                            int ny, double dx, double dy,
-                                            double dt, double beta,
-                                            double div_tolerance,
-                                            int *converged) {
+// CUDA kernel to perform pressure correction iterations
+__global__ void pressure_correction_kernel(double *u, double *v, double *p,
+                                           double *div, int nx,
+                                           int ny, double dx, double dy,
+                                           double dt, double beta,
+                                           double div_tolerance,
+                                           int *converged) {
     int i = blockIdx.x*blockDim.x + threadIdx.x;
     int j = blockIdx.y*blockDim.y + threadIdx.y;
 
-    if (i < nx && j < ny && (i + j) % 2 == 0) { // Process only red cells
-        if (mask[j*nx + i] == 1 && fabs(div[j*nx + i]) > div_tolerance) {
+    if (i < nx && j < ny) {
+        if (fabs(div[j*nx + i]) > div_tolerance) {
             atomicAnd(converged, 0);
 
             double delta_p = -beta*div[j*nx + i];
             p[j*nx + i] += delta_p * 0.7;
 
-            // Adjust velocity components (direct assignment for red phase)
-            if (i+1 <= nx) u[j*(nx+1) + i+1] += 0.5*dt/dx * delta_p;
-            if (i >= 0) u[j*(nx+1) + i] -= 0.5*dt/dx * delta_p;
-            if (j+1 <= ny) v[(j+1)*nx + i] += 0.5*dt/dy * delta_p;
-            if (j >= 0) v[j*nx + i] -= 0.5*dt/dy * delta_p;
-        }
-    }
-}
-
-// CUDA kernel to perform pressure correction iterations (Red-Black - Black Phase)
-__global__ void pressure_correction_kernel_black(double *u, double *v, double *p,
-                                            double *div, int *mask, int nx,
-                                            int ny, double dx, double dy,
-                                            double dt, double beta,
-                                            double div_tolerance,
-                                            int *converged) {
-    int i = blockIdx.x*blockDim.x + threadIdx.x;
-    int j = blockIdx.y*blockDim.y + threadIdx.y;
-
-    if (i < nx && j < ny && (i + j) % 2 != 0) { // Process only black cells
-        if (mask[j*nx + i] == 1 && fabs(div[j*nx + i]) > div_tolerance) {
-            atomicAnd(converged, 0);
-
-            double delta_p = -beta*div[j*nx + i];
-            p[j*nx + i] += delta_p * 0.7;
-
-            // Adjust velocity components (direct assignment for black phase)
-            if (i+1 <= nx) u[j*(nx+1) + i+1] += 0.5*dt/dx * delta_p;
-            if (i >= 0) u[j*(nx+1) + i] -= 0.5*dt/dx * delta_p;
-            if (j+1 <= ny) v[(j+1)*nx + i] += 0.5*dt/dy * delta_p;
-            if (j >= 0) v[j*nx + i] -= 0.5*dt/dy * delta_p;
+            if (i+1 <= nx) atomicAdd(&u[j*(nx+1) + i+1], 0.5*dt/dx * delta_p);
+            if (i >= 0) atomicAdd(&u[j*(nx+1) + i], -0.5*dt/dx * delta_p);
+            if (j+1 <= ny) atomicAdd(&v[(j+1)*nx + i], 0.5*dt/dy * delta_p);
+            if (j >= 0) atomicAdd(&v[j*nx + i], -0.5*dt/dy * delta_p);
         }
     }
 }
@@ -447,16 +406,20 @@ void write_metadata_to_json(const char *filename, double compute_time_seconds, d
     fprintf(fp, "    \"dy\": %f,\n", dy);
     fprintf(fp, "    \"dt\": %f,\n", dt);
     fprintf(fp, "    \"nu\": %f,\n", nu);
+    fprintf(fp, "    \"Re\": %f,\n", Re);
     fprintf(fp, "    \"div_tolerance\": %e,\n", div_tolerance);
     fprintf(fp, "    \"beta0\": %f,\n", beta0);
     fprintf(fp, "    \"max_iterations\": %d,\n", max_iterations);
     fprintf(fp, "    \"total_time\": %f,\n", total_time);
     fprintf(fp, "    \"beta\": %f,\n", beta);
-    fprintf(fp, "    \"obstacle_x_start\": %d,\n", obstacle_x_start);
-    fprintf(fp, "    \"obstacle_x_end\": %d,\n", obstacle_x_end);
-    fprintf(fp, "    \"obstacle_y_start\": %d,\n", obstacle_y_start);
-    fprintf(fp, "    \"obstacle_y_end\": %d,\n", obstacle_y_end);
-
+    fprintf(fp, "    \"inlet_start_j\": %d,\n", inlet_start);
+    fprintf(fp, "    \"inlet_end_j\": %d,\n", inlet_end);
+    fprintf(fp, "    \"outlet1_start_j\": %d,\n", outlet1_start);
+    fprintf(fp, "    \"outlet1_end_j\": %d,\n", outlet1_end);
+    fprintf(fp, "    \"outlet2_start_j\": %d,\n", outlet2_start);
+    fprintf(fp, "    \"outlet2_end_j\": %d,\n", outlet2_end);
+    fprintf(fp, "    \"outlet3_start_j\": %d,\n", outlet3_start);
+    fprintf(fp, "    \"outlet3_end_j\": %d,\n", outlet3_end);
     fprintf(fp, "    \"data_dtype\": \"float16\",\n");
     fprintf(fp, "    \"output_interval_in_c_steps\": %d,\n",
             (int)(total_time / dt) / max_number_of_frames);
@@ -467,7 +430,7 @@ void write_metadata_to_json(const char *filename, double compute_time_seconds, d
             compute_time_seconds);
     fprintf(fp, "    \"total_time_seconds\": %f,\n",
             total_time_seconds);
-    fprintf(fp, "    \"parallelization\": \"CUDA_RedBlack\"\n");
+    fprintf(fp, "    \"parallelization\": \"CUDA\"\n");
 
     fprintf(fp, "}");
     fclose(fp);
@@ -482,21 +445,20 @@ int main() {
     h_v = allocate_2d_array(ny+1, nx);
     h_p = allocate_2d_array(ny, nx);
     h_div = allocate_2d_array(ny, nx);
-    h_mask = allocate_2d_int_array(ny, nx);
     h_u_center = allocate_2d_array(ny, nx);
     h_v_center = allocate_2d_array(ny, nx);
     h_velocity_magnitude = allocate_2d_array(ny, nx);
 
-    // Initialize obstacle mask
-    for (int j = obstacle_y_start; j < obstacle_y_end; j++) {
-        for (int i = obstacle_x_start; i < obstacle_x_end; i++) {
-            h_mask[j][i] = 0;
+    // Initialize flow: zero velocity everywhere
+    for (int j = 0; j < ny; j++) {
+        for (int i = 0; i <= nx; i++) {
+            h_u[j][i] = 0.0;
         }
     }
-
-    // Initialize flow: add inlet velocity from the left
-    for (int j = 0; j < ny; j++) {
-        h_u[j][0] = 1.0;
+    for (int j = 0; j <= ny; j++) {
+        for (int i = 0; i < nx; i++) {
+            h_v[j][i] = 0.0;
+        }
     }
 
     // Allocate device memory
@@ -509,7 +471,6 @@ int main() {
     CUDA_CHECK_ERROR(cudaMalloc((void **)&d_u_center, ny*nx*s_d));
     CUDA_CHECK_ERROR(cudaMalloc((void **)&d_v_center, ny*nx*s_d));
     CUDA_CHECK_ERROR(cudaMalloc((void **)&d_velocity_magnitude, ny*nx*s_d));
-    CUDA_CHECK_ERROR(cudaMalloc((void **)&d_mask, ny*nx*s_i));
     CUDA_CHECK_ERROR(cudaMalloc((void **)&d_converged, s_i));
 
     // Initialize device memory
@@ -574,15 +535,9 @@ int main() {
             CUDA_CHECK_ERROR(cudaMemcpy(d_converged, &h_converged, s_i,
                                         cudaMemcpyHostToDevice));
 
-            // Apply pressure correction (Red-Black)
-            pressure_correction_kernel_red<<<gridSize, blockSize>>>(
-                d_u, d_v, d_p, d_div, d_mask, nx, ny, dx, dy, dt, beta,
-                div_tolerance, d_converged);
-            // CUDA_CHECK_ERROR(cudaGetLastError());
-            CUDA_CHECK_ERROR(cudaDeviceSynchronize());
-
-            pressure_correction_kernel_black<<<gridSize, blockSize>>>(
-                d_u, d_v, d_p, d_div, d_mask, nx, ny, dx, dy, dt, beta,
+            // Apply pressure correction
+            pressure_correction_kernel<<<gridSize, blockSize>>>(
+                d_u, d_v, d_p, d_div, nx, ny, dx, dy, dt, beta,
                 div_tolerance, d_converged);
             // CUDA_CHECK_ERROR(cudaGetLastError());
             CUDA_CHECK_ERROR(cudaDeviceSynchronize());
@@ -598,7 +553,7 @@ int main() {
 
         // Apply boundary conditions
         apply_boundary_conditions_kernel<<<gridSize, blockSize>>>(
-            d_u, d_v, d_mask, nx, ny);
+            d_u, d_v, nx, ny, inlet_start, inlet_end, outlet1_start, outlet1_end, outlet2_start, outlet2_end, outlet3_start, outlet3_end);
         // CUDA_CHECK_ERROR(cudaGetLastError());
         CUDA_CHECK_ERROR(cudaDeviceSynchronize());
 
@@ -650,7 +605,6 @@ int main() {
     cudaFree(d_u_center);
     cudaFree(d_v_center);
     cudaFree(d_velocity_magnitude);
-    cudaFree(d_mask);
     cudaFree(d_converged);
 
     // Free host memory
@@ -658,7 +612,6 @@ int main() {
     free_2d_array(h_v);
     free_2d_array(h_p);
     free_2d_array(h_div);
-    free_2d_int_array(h_mask);
     free_2d_array(h_u_center);
     free_2d_array(h_v_center);
     free_2d_array(h_velocity_magnitude);
