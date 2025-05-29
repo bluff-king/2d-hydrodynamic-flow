@@ -54,7 +54,3 @@ nvcc simulation_cuda.cu -o bin/simulation_cuda -arch=sm_XX
 # visualize
 python visualize.py
 ```
-
-## References
-
-Todo
