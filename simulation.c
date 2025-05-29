@@ -417,8 +417,7 @@ int main() {
         update_velocities();
         pressure_correction();
         apply_boundary_conditions();
-        calculate_center_velocities_and_magnitude(u_center, v_center,
-                                                  velocity_magnitude);
+        calculate_center_velocities_and_magnitude();
         clock_t end_time = clock();
         total_compute_time_seconds +=
             (double)(end_time - start_time) / CLOCKS_PER_SEC;
